@@ -28,6 +28,10 @@ import {
   X,
 } from "lucide-react"
 
+// Firebase imports (static)
+import { db } from "@/lib/firebase"
+import { doc, setDoc } from "firebase/firestore"
+
 type DeliveryMethod = "knutsford" | "zipmail" | "inperson" | "taximan"
 type PaymentMethod = "paypal" | "zelle" | "cashapp" | "scotia" | "cibc" | "cod"
 
@@ -360,12 +364,13 @@ export default function CheckoutPage() {
       hasReceiptUpload: !!receiptFile,
       receiptImage: receiptBase64,
       deliveryDetails,
+      userId: user?.uid, // 🔥 ADDED: required by Firestore rules
     }
 
     // Save to sessionStorage first so navigation always works
     sessionStorage.setItem("lastOrder", JSON.stringify(orderDetails))
 
-    // Send order email via API - await to ensure it sends before navigating
+    // Send order email via API
     try {
       const emailRes = await fetch("/api/order", {
         method: "POST",
@@ -379,10 +384,8 @@ export default function CheckoutPage() {
       console.error("[v0] Order email fetch error:", err)
     }
 
-    // Save to Firebase
+    // Save to Firebase with improved error handling
     try {
-      const { db } = await import("@/lib/firebase")
-      const { doc, setDoc } = await import("firebase/firestore")
       await setDoc(doc(db, "orders", orderDetails.receiptNumber), {
         ...orderDetails,
         status: "pending",
@@ -390,6 +393,9 @@ export default function CheckoutPage() {
       })
     } catch (err) {
       console.error("[v0] Firebase order save error:", err)
+      alert("Failed to save your order. Please check your connection and try again, or contact support.")
+      setIsProcessing(false)
+      return // Stop further execution – order not saved
     }
 
     // Auto mark purchased items as sold out in Firebase inventory
