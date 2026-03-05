@@ -26,6 +26,7 @@ import {
   Banknote,
   Mail,
   X,
+  AlertCircle,
 } from "lucide-react"
 
 // Firebase imports (static)
@@ -154,6 +155,28 @@ function validateReceiptFile(file: File): Promise<string | null> {
   })
 }
 
+// Knutsford location options
+const knutsfordLocations = [
+  "Gutters",
+  "Luana",
+  "Savanna-La-Mar",
+  "Negril",
+  "Lucea",
+  "Montego Bay (Pier 1)",
+  "Montego Bay (Airport)",
+  "Falmouth",
+  "Drax Hall",
+  "Ochi",
+  "Port Maria",
+  "Annotto Bay",
+  "Port Antonio",
+  "New Kingston",
+  "Portmore",
+  "Angels",
+  "Harbour View",
+  "May Pen",
+]
+
 export default function CheckoutPage() {
   const { items, totalPrice, clearCart } = useCart()
   const { user, loading: authLoading } = useAuth()
@@ -173,6 +196,13 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (user?.email) setEmailAddress((prev) => prev || user.email!)
   }, [user])
+
+  // Reset payment method if it becomes invalid when delivery method changes
+  useEffect(() => {
+    if (paymentMethod === "cod" && deliveryMethod !== "inperson") {
+      setPaymentMethod(null)
+    }
+  }, [deliveryMethod, paymentMethod])
 
   const deliveryFee = deliveryMethod === "inperson" ? 0 : deliveryMethod ? 700 : 0
   const finalTotal = totalPrice + deliveryFee
@@ -517,11 +547,11 @@ export default function CheckoutPage() {
                   type="email"
                   required
                   value={emailAddress}
-                  onChange={(e) => { setEmailAddress(e.target.value); clearFieldError("emailAddress") }}
-                  placeholder="your@email.com"
-                  className={fieldErrors.emailAddress ? "border-red-500" : ""}
+                  disabled // 🔒 Make it read‑only
+                  className={fieldErrors.emailAddress ? "border-red-500 bg-muted" : "bg-muted"}
                 />
                 {fieldErrors.emailAddress && <p className="text-xs text-red-600">{fieldErrors.emailAddress}</p>}
+                <p className="text-xs text-muted-foreground">Your email is taken from your account and cannot be changed here.</p>
               </div>
             </CardContent>
           </Card>
@@ -573,7 +603,19 @@ export default function CheckoutPage() {
                   <h4 className="font-medium text-foreground">Knutsford Express Details</h4>
                   <div className="space-y-2">
                     <Label htmlFor="knutsfordLocation">Knutsford Location *</Label>
-                    <Input name="knutsfordLocation" id="knutsfordLocation" required placeholder="e.g., Half Way Tree, Kingston" className={fieldErrors.knutsfordLocation ? "border-red-500" : ""} onChange={() => clearFieldError("knutsfordLocation")} />
+                    <select
+                      name="knutsfordLocation"
+                      id="knutsfordLocation"
+                      required
+                      defaultValue=""
+                      className={`w-full rounded-md border ${fieldErrors.knutsfordLocation ? "border-red-500" : "border-border"} bg-background px-3 py-2 text-sm text-foreground`}
+                      onChange={() => clearFieldError("knutsfordLocation")}
+                    >
+                      <option value="" disabled>Select a location</option>
+                      {knutsfordLocations.map((loc) => (
+                        <option key={loc} value={loc}>{loc}</option>
+                      ))}
+                    </select>
                     {fieldErrors.knutsfordLocation && <p className="text-xs text-red-600">{fieldErrors.knutsfordLocation}</p>}
                   </div>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -723,13 +765,22 @@ export default function CheckoutPage() {
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {paymentOptions.map((option) => {
                   const isSelected = paymentMethod === option.id
+                  // COD is only enabled when deliveryMethod is "inperson"
+                  const isDisabled = option.id === "cod" && deliveryMethod !== "inperson"
                   return (
                     <button
                       key={option.id}
                       type="button"
-                      onClick={() => setPaymentMethod(option.id)}
+                      onClick={() => {
+                        if (!isDisabled) setPaymentMethod(option.id)
+                      }}
+                      disabled={isDisabled}
                       className={`flex items-center gap-3 rounded-lg border-2 p-4 text-left transition-all ${
-                        isSelected ? "border-primary bg-primary/5 shadow-sm" : "border-border hover:border-primary/50"
+                        isSelected
+                          ? "border-primary bg-primary/5 shadow-sm"
+                          : isDisabled
+                          ? "border-border/50 bg-muted/30 opacity-60 cursor-not-allowed"
+                          : "border-border hover:border-primary/50"
                       }`}
                     >
                       <div
@@ -749,6 +800,11 @@ export default function CheckoutPage() {
                   )
                 })}
               </div>
+              {deliveryMethod && deliveryMethod !== "inperson" && (
+                <p className="text-xs text-muted-foreground italic">
+                  Cash on Delivery is only available for In‑Person (Mandeville) deliveries.
+                </p>
+              )}
 
               {/* Banking Details Display */}
               {paymentMethod && paymentMethod !== "cod" && bankingDetails[paymentMethod] && (
@@ -890,6 +946,21 @@ export default function CheckoutPage() {
               {!paymentMethod && (
                 <p className="text-sm text-muted-foreground">Please select a payment method to continue.</p>
               )}
+            </CardContent>
+          </Card>
+
+          {/* ── Non‑Refundable Disclaimer ── */}
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="font-semibold text-amber-800">All Sales Are Final</h3>
+                  <p className="text-sm text-amber-700">
+                    Items are non‑refundable and non‑returnable. Please double‑check your selections before placing your order.
+                  </p>
+                </div>
+              </div>
             </CardContent>
           </Card>
 

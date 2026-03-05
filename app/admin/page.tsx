@@ -8,12 +8,13 @@ import { db } from "@/lib/firebase"
 import { collection, getDocs, query, orderBy, doc, updateDoc, addDoc, deleteDoc, Timestamp } from "firebase/firestore"
 import { getAllProducts, updateProduct, addProduct } from "@/lib/firebase-products"
 import type { Product, ProductStatus } from "@/lib/products"
-import { Loader2, Package, ShoppingCart, Users, ChevronDown, Eye, X, Plus, Upload, RefreshCw, Send, ImageIcon, Trash2, MessageCircle, Star, Archive, ArchiveRestore } from "lucide-react"
+import { Loader2, Package, ShoppingCart, Users, ChevronDown, Eye, X, Plus, Upload, RefreshCw, Send, ImageIcon, Trash2, MessageCircle, Star, Archive, ArchiveRestore, DollarSign, BarChart3 } from "lucide-react"
 
 /* ─── Types ─── */
 interface OrderItem { name: string; quantity: number; price: number }
 interface Order {
   receiptNumber: string
+  userId?: string // added for manual sale rule compliance
   customerName?: string
   customerPhone?: string
   customerEmail?: string
@@ -29,6 +30,7 @@ interface Order {
   status: string
   createdAt: string
   fulfillment?: FulfillmentDetails
+  adminNote?: string // optional note for manual orders
 }
 interface FulfillmentDetails {
   trackingNumber?: string
@@ -118,7 +120,7 @@ export default function AdminPage() {
   // Seeding
   const [seeding, setSeeding] = useState(false)
   const [seedMessage, setSeedMessage] = useState<string | null>(null)
-    useEffect(() => {
+  useEffect(() => {
     setSeedMessage(null);   // clear any old seed message when tab changes
   }, [activeTab]);
   const [firestoreStatus, setFirestoreStatus] = useState<"checking" | "ok" | "blocked" | null>(null)
@@ -191,17 +193,24 @@ export default function AdminPage() {
         const allReplies: AdminReply[] = repSnap.docs.map((d) => {
           const data = d.data()
           return {
-            id: d.id, reviewId: data.reviewId, authorName: data.authorName || "",
-            isAdmin: data.isAdmin || false, text: data.text || "",
+            id: d.id,
+            reviewId: data.reviewId,
+            authorName: data.authorName || "",
+            isAdmin: data.isAdmin || false,
+            text: data.text || "",
             createdAt: data.createdAt?.toDate?.() ? data.createdAt.toDate().toLocaleDateString() : "",
           }
         })
         reviewsList = revSnap.docs.map((d) => {
           const data = d.data()
           return {
-            id: d.id, authorName: data.authorName || data.name || "Anonymous",
-            authorEmail: data.authorEmail || "", rating: data.rating || 5,
-            product: data.product || "", text: data.text || "", date: data.date || "",
+            id: d.id,
+            authorName: data.authorName || data.name || "Anonymous",
+            authorEmail: data.authorEmail || "",
+            rating: data.rating || 5,
+            product: data.product || "",
+            text: data.text || "",
+            date: data.date || "",
             archived: data.archived || false,
             replies: allReplies.filter((r) => r.reviewId === d.id),
           }
@@ -336,6 +345,19 @@ export default function AdminPage() {
     }
   };
 
+  /* ─── Delete order ─── */
+  const deleteOrder = async (receiptNumber: string) => {
+    if (!confirm('Are you sure you want to permanently delete this order?')) return;
+    try {
+      await deleteDoc(doc(db, 'orders', receiptNumber));
+      setOrders(prev => prev.filter(o => o.receiptNumber !== receiptNumber));
+      if (expandedOrder === receiptNumber) setExpandedOrder(null);
+    } catch (err) {
+      alert('Failed to delete order. Check Firestore rules.');
+      console.error(err);
+    }
+  };
+
   /* ─── Handle product photo upload ─── */
   async function handleProductPhotoUpload(e: React.ChangeEvent<HTMLInputElement>, mode: "add" | "edit", isMain?: boolean) {
     const file = e.target.files?.[0]
@@ -368,6 +390,44 @@ export default function AdminPage() {
     } else if (editingProduct) {
       const updated = editingProduct.images.filter((_, i) => i !== index)
       setEditingProduct({ ...editingProduct, images: updated, image: updated[0] || editingProduct.image })
+    }
+  }
+
+  /* ─── Manual Sale Recording ─── */
+  async function recordManualSale(product: Product) {
+    if (!confirm(`Record a sale for "${product.name}"? This will create an order with quantity 1.`)) return;
+
+    const receiptNumber = `MANUAL-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+    const price = product.salePrice ?? product.price ?? 0;
+    const item = {
+      name: product.name,
+      quantity: 1,
+      price: price,
+    };
+
+    const newOrder = {
+      receiptNumber,
+      userId: user?.uid, // Include admin's UID to satisfy Firestore rule
+      items: [item],
+      subtotal: price,
+      deliveryFee: 0,
+      total: price,
+      deliveryMethod: 'inperson', // default
+      paymentMethod: 'cash', // default
+      status: 'delivered', // mark as delivered so it counts in revenue
+      createdAt: new Date().toISOString(),
+      customerName: 'Admin Manual Sale',
+      customerEmail: '',
+      adminNote: 'Manually recorded by admin via "Sold Out" action',
+    };
+
+    try {
+      await addDoc(collection(db, 'orders'), newOrder);
+      await loadData(); // refresh all data
+      alert('Sale recorded and order created.');
+    } catch (err) {
+      alert('Failed to record sale. Check Firestore rules.');
+      console.error(err);
     }
   }
 
@@ -479,6 +539,32 @@ export default function AdminPage() {
   const filteredProducts = categoryFilter === "all" ? products : products.filter((p) => p.category === categoryFilter)
   const filteredReviews = reviews.filter((r) => reviewFilter === "active" ? !r.archived : r.archived)
 
+  // Summary statistics
+  const totalOrders = orders.length
+  // Revenue excludes delivery fees – use subtotal instead of total
+  // Only count orders with status in ['confirmed', 'shipped', 'delivered']
+  const revenueOrders = orders.filter(o => ['confirmed', 'shipped', 'delivered'].includes(o.status));
+  const totalRevenue = revenueOrders.reduce((sum, order) => sum + (order.subtotal || 0), 0)
+  const inventoryValue = products.reduce((sum, product) => {
+    const price = product.salePrice ?? product.price ?? 0
+    if (product.category === "wigs") {
+      if (product.quantity != null && product.quantity > 0) {
+        return sum + price * product.quantity
+      }
+      // If quantity is undefined/null or zero, no stock value
+      return sum
+    } else {
+      // swimsuits
+      if (product.sizeQuantities) {
+        const totalQty = Object.values(product.sizeQuantities).reduce((a, b) => a + (b || 0), 0)
+        return sum + price * totalQty
+      }
+      return sum
+    }
+  }, 0)
+  const totalProducts = products.length
+  const totalUsers = users.length
+
   if (authLoading || (!isAdmin && !authLoading)) {
     return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
   }
@@ -523,6 +609,65 @@ export default function AdminPage() {
             <p className="text-sm text-foreground break-words">{seedMessage}</p>
           </div>
         )}
+
+        {/* Summary Cards */}
+        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-primary/10 p-2">
+                <ShoppingCart className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Total Orders</p>
+                <p className="text-2xl font-bold text-foreground">{totalOrders}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-green-100 p-2">
+                <DollarSign className="h-5 w-5 text-green-600" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Total Revenue</p>
+                <p className="text-2xl font-bold text-foreground">${totalRevenue.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-blue-100 p-2">
+                <Package className="h-5 w-5 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Inventory Value</p>
+                <p className="text-2xl font-bold text-foreground">${inventoryValue.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-purple-100 p-2">
+                <BarChart3 className="h-5 w-5 text-purple-600" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Total Products</p>
+                <p className="text-2xl font-bold text-foreground">{totalProducts}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-amber-100 p-2">
+                <Users className="h-5 w-5 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Total Users</p>
+                <p className="text-2xl font-bold text-foreground">{totalUsers}</p>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Tabs */}
         <div className="mb-6 flex flex-wrap gap-1 rounded-lg border border-border bg-background p-1">
@@ -626,9 +771,20 @@ export default function AdminPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                      <select value={product.status || "available"}
-                        onChange={(e) => { updateProduct(product.id, { status: e.target.value as ProductStatus }).then(() => loadData()) }}
-                        className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground">
+                      <select
+                        value={product.status || "available"}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value as ProductStatus;
+                          // If changing to sold_out, offer to record a manual sale
+                          if (newStatus === "sold_out") {
+                            await recordManualSale(product);
+                          }
+                          // Always update product status
+                          await updateProduct(product.id, { status: newStatus });
+                          await loadData();
+                        }}
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+                      >
                         <option value="available">Available</option>
                         <option value="sold_out">Sold Out</option>
                         <option value="coming_soon">Coming Soon</option>
@@ -669,6 +825,7 @@ export default function AdminPage() {
                         </div>
                         <p className="mt-0.5 text-xs text-muted-foreground break-words">
                           {order.customerName || "Unknown"} &middot; {order.customerEmail || "No email"} &middot; ${order.total?.toFixed(2)} &middot; {new Date(order.createdAt).toLocaleDateString()}
+                          {order.adminNote && <span className="ml-2 italic text-blue-600">({order.adminNote})</span>}
                         </p>
                       </div>
                       <ChevronDown className={`h-5 w-5 flex-shrink-0 text-muted-foreground transition-transform ${expandedOrder === order.receiptNumber ? "rotate-180" : ""}`} />
@@ -717,16 +874,25 @@ export default function AdminPage() {
                           </div>
                         )}
 
-                        <div className="mt-4">
-                          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Update Status</h4>
-                          <select value={order.status} onChange={(e) => updateOrderStatus(order.receiptNumber, e.target.value)}
-                            className="w-full sm:w-auto rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
-                            <option value="pending">Pending</option>
-                            <option value="confirmed">Confirmed</option>
-                            <option value="shipped">Shipped</option>
-                            <option value="delivered">Delivered</option>
-                            <option value="cancelled">Cancelled</option>
-                          </select>
+                        <div className="mt-4 flex items-center gap-4">
+                          <div>
+                            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Update Status</h4>
+                            <select value={order.status} onChange={(e) => updateOrderStatus(order.receiptNumber, e.target.value)}
+                              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+                              <option value="pending">Pending</option>
+                              <option value="confirmed">Confirmed</option>
+                              <option value="shipped">Shipped</option>
+                              <option value="delivered">Delivered</option>
+                              <option value="cancelled">Cancelled</option>
+                            </select>
+                          </div>
+                          <button
+                            onClick={() => deleteOrder(order.receiptNumber)}
+                            className="rounded-md border border-border p-2 text-red-600 hover:bg-red-50"
+                            title="Delete order permanently"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
 
                         <div className="mt-4 rounded-md border border-border bg-muted/30 p-4">
