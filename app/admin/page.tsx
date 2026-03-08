@@ -1477,7 +1477,7 @@ export default function AdminPage() {
                       return (
                         <div key={collab.id} className="rounded-lg border border-border bg-background p-4">
                           <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
-                            <div className="flex-1 w-full">
+                            <div className="flex-1 w-full min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-medium text-foreground">{collab.vendorUsername}</span>
                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${collab.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
@@ -1489,30 +1489,50 @@ export default function AdminPage() {
                                   </span>
                                 )}
                               </div>
-                              <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                              <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                {/* Vendor link – added break-all to wrap long URLs */}
                                 <p className="text-muted-foreground break-words">
                                   <span className="font-medium text-foreground">Vendor:</span>{' '}
-                                  <a href={collab.vendorLink} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{collab.vendorLink}</a>
+                                  <a
+                                    href={collab.vendorLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline break-all"
+                                  >
+                                    {collab.vendorLink}
+                                  </a>
                                 </p>
+                                {/* Item link – also add break-all for safety (though it's just "Link") */}
                                 <p className="text-muted-foreground break-words">
                                   <span className="font-medium text-foreground">Item:</span>{' '}
-                                  <a href={collab.itemLink} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Link</a>
+                                  <a
+                                    href={collab.itemLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline break-all"
+                                  >
+                                    Link
+                                  </a>
                                 </p>
                                 <p className="text-muted-foreground break-words col-span-2">
                                   <span className="font-medium text-foreground">Policy:</span> {collab.policy || '—'}
                                 </p>
-                                <p className="text-muted-foreground">
+                                <p className="text-muted-foreground break-words">
                                   <span className="font-medium text-foreground">Hair:</span> {collab.hairDetails.type}
                                   {collab.hairDetails.length && `, ${collab.hairDetails.length}`}
                                   {collab.hairDetails.density && `, ${collab.hairDetails.density}`}
                                   {collab.hairDetails.notes && ` — ${collab.hairDetails.notes}`}
                                 </p>
-                                <p className="text-muted-foreground">
-                                  <span className="font-medium text-foreground">Refunds:</span> First ${collab.firstRefundAmount?.toFixed(2) ?? '0'} {collab.firstRefundReceived ? '(received)' : '(pending)'}, Second ${collab.secondRefundAmount?.toFixed(2) ?? '0'} {collab.secondRefundReceived ? '(received)' : '(pending)'}
+                                {/* Refunds split into two lines on mobile for better readability */}
+                                <p className="text-muted-foreground break-words sm:col-span-1">
+                                  <span className="font-medium text-foreground">First:</span> ${collab.firstRefundAmount?.toFixed(2) ?? '0'} {collab.firstRefundReceived ? '✓' : '⏳'}
+                                </p>
+                                <p className="text-muted-foreground break-words sm:col-span-1">
+                                  <span className="font-medium text-foreground">Second:</span> ${collab.secondRefundAmount?.toFixed(2) ?? '0'} {collab.secondRefundReceived ? '✓' : '⏳'}
                                 </p>
                               </div>
                             </div>
-                            <div className="flex items-center gap-1 self-end sm:self-start">
+                            <div className="flex items-center gap-1 self-end sm:self-start flex-shrink-0">
                               <button onClick={() => editWigCollab(collab)}
                                 className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted">Edit</button>
                               <button onClick={() => deleteWigCollab(collab.id!)}
