@@ -13,7 +13,7 @@ import { Loader2, Package, ShoppingCart, Users, ChevronDown, Eye, X, Plus, Uploa
 /* ─── Types ─── */
 interface OrderItem { name: string; quantity: number; price: number }
 interface Order {
-  id?: string                     // 👈 FIX: store Firestore document ID
+  id?: string
   receiptNumber: string
   userId?: string
   customerName?: string
@@ -78,7 +78,7 @@ interface WigCollab {
   itemLink: string
   policy: string
   firstRefundAmount: number
-  firstRefundReceived: boolean          // 👈 NEW
+  firstRefundReceived: boolean
   secondRefundAmount: number
   secondRefundReceived: boolean
   hairDetails: {
@@ -134,8 +134,11 @@ export default function AdminPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [saving, setSaving] = useState(false)
 
+  // Bulk discount state
+  const [bulkUpdating, setBulkUpdating] = useState(false)
+
   // Orders
-  const [expandedOrder, setExpandedOrder] = useState<string | null>(null) // now stores order.id
+  const [expandedOrder, setExpandedOrder] = useState<string | null>(null)
   const [fulfillmentInputs, setFulfillmentInputs] = useState<Record<string, FulfillmentDetails>>({})
   const [sendingEmail, setSendingEmail] = useState<string | null>(null)
   const [uploadingFulfillmentReceipt, setUploadingFulfillmentReceipt] = useState<string | null>(null)
@@ -172,7 +175,7 @@ export default function AdminPage() {
     itemLink: '',
     policy: '',
     firstRefundAmount: 0,
-    firstRefundReceived: false,           // 👈 NEW
+    firstRefundReceived: false,
     secondRefundAmount: 0,
     secondRefundReceived: false,
     hairDetails: { type: 'wig', length: '', density: '', notes: '' },
@@ -213,10 +216,7 @@ export default function AdminPage() {
       let ordersList: Order[] = []
       try {
         const orderSnap = await getDocs(query(collection(db, "orders"), orderBy("createdAt", "asc")))
-        ordersList = orderSnap.docs.map((d) => ({    // 👈 FIX: include document id
-          id: d.id,
-          ...d.data()
-        } as Order))
+        ordersList = orderSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Order))
       } catch { /* rules may block */ }
 
       let usersList: FirebaseUser[] = []
@@ -393,15 +393,15 @@ export default function AdminPage() {
     }
   };
 
-  /* ─── Delete order – now uses document ID ─── */
-  const deleteOrder = async (orderId: string) => {          // 👈 FIX: parameter is document ID
+  /* ─── Delete order ─── */
+  const deleteOrder = async (orderId: string) => {
     if (!confirm('Are you sure you want to permanently delete this order?')) return;
     try {
       await deleteDoc(doc(db, 'orders', orderId));
       setOrders(prev => prev.filter(o => o.id !== orderId));
       if (expandedOrder === orderId) setExpandedOrder(null);
     } catch (err) {
-      console.error('Delete error:', err);                  // 👈 FIX: log actual error
+      console.error('Delete error:', err);
       alert(`Delete failed: ${err.message || 'Check console for details'}`);
     }
   };
@@ -479,8 +479,8 @@ export default function AdminPage() {
     }
   }
 
-  /* ─── Update order status – uses document ID ─── */
-  async function updateOrderStatus(orderId: string, newStatus: string) {   // 👈 FIX: parameter is document ID
+  /* ─── Update order status ─── */
+  async function updateOrderStatus(orderId: string, newStatus: string) {
     try {
       await updateDoc(doc(db, "orders", orderId), { status: newStatus })
       setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, status: newStatus } : o))
@@ -502,13 +502,13 @@ export default function AdminPage() {
     finally { setUploadingFulfillmentReceipt(null); e.target.value = "" }
   }
 
-  /* ─── Save fulfillment + send email – uses document ID ─── */
+  /* ─── Save fulfillment + send email ─── */
   async function saveFulfillmentAndSendEmail(order: Order) {
-    if (!order.id) return;   // safety
+    if (!order.id) return;
     const fulfillment = fulfillmentInputs[order.receiptNumber] || {}
     setSendingEmail(order.receiptNumber)
     try {
-      await updateDoc(doc(db, "orders", order.id), { fulfillment })   // 👈 FIX: use order.id
+      await updateDoc(doc(db, "orders", order.id), { fulfillment })
 
       const res = await fetch("/api/admin/order-status", {
         method: "POST",
@@ -597,7 +597,7 @@ export default function AdminPage() {
       const data = {
         ...wigCollabForm,
         firstRefundAmount: wigCollabForm.firstRefundAmount || 0,
-        firstRefundReceived: wigCollabForm.firstRefundReceived || false,   // 👈 NEW
+        firstRefundReceived: wigCollabForm.firstRefundReceived || false,
         secondRefundAmount: wigCollabForm.secondRefundAmount || 0,
         secondRefundReceived: wigCollabForm.secondRefundReceived || false,
         hairDetails: wigCollabForm.hairDetails || { type: 'wig' },
@@ -647,39 +647,22 @@ export default function AdminPage() {
   }
 
   // Computed stats for wig tracker
-  // const wigStats = {
-  //   total: wigCollabs.length,
-  //   active: wigCollabs.filter(c => c.status === 'active').length,
-  //   outstanding: wigCollabs.reduce((sum, c) => {
-  //     if (c.status === 'active' && !c.secondRefundReceived) {
-  //       return sum + (c.secondRefundAmount || 0);
-  //     }
-  //     return sum;
-  //   }, 0),
-  //   received: wigCollabs.reduce((sum, c) => {
-  //     let total = (c.firstRefundAmount || 0);
-  //     if (c.firstRefundReceived) total += (c.firstRefundAmount || 0);      // we already count first amount once, but careful: this might double count? Adjust if needed.
-  //     if (c.secondRefundReceived) total += (c.secondRefundAmount || 0);
-  //     return sum + total;
-  //   }, 0),
-  // };
-  // Computed stats for wig tracker
-const wigStats = {
-  total: wigCollabs.length,
-  active: wigCollabs.filter(c => c.status === 'active').length,
-  outstanding: wigCollabs.reduce((sum, c) => {
-    if (c.status === 'active' && !c.secondRefundReceived) {
-      return sum + (c.secondRefundAmount || 0);
-    }
-    return sum;
-  }, 0),
-  received: wigCollabs.reduce((sum, c) => {
-    let total = 0;
-    if (c.firstRefundReceived) total += (c.firstRefundAmount || 0);
-    if (c.secondRefundReceived) total += (c.secondRefundAmount || 0);
-    return sum + total;
-  }, 0),
-};
+  const wigStats = {
+    total: wigCollabs.length,
+    active: wigCollabs.filter(c => c.status === 'active').length,
+    outstanding: wigCollabs.reduce((sum, c) => {
+      if (c.status === 'active' && !c.secondRefundReceived) {
+        return sum + (c.secondRefundAmount || 0);
+      }
+      return sum;
+    }, 0),
+    received: wigCollabs.reduce((sum, c) => {
+      let total = 0;
+      if (c.firstRefundReceived) total += (c.firstRefundAmount || 0);
+      if (c.secondRefundReceived) total += (c.secondRefundAmount || 0);
+      return sum + total;
+    }, 0),
+  };
 
   const filteredProducts = categoryFilter === "all" ? products : products.filter((p) => p.category === categoryFilter)
   const filteredReviews = reviews.filter((r) => reviewFilter === "active" ? !r.archived : r.archived)
@@ -705,6 +688,103 @@ const wigStats = {
   }, 0)
   const totalProducts = products.length
   const totalUsers = users.length
+
+  /* ===== BULK DISCOUNT FUNCTIONS ===== */
+  async function applyDiscountToWigs() {
+    const amountStr = window.prompt("Enter discount amount to subtract from original price (e.g., 500):");
+    if (!amountStr) return;
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter a valid positive number.");
+      return;
+    }
+    if (!confirm(`Apply $${amount} discount to all wigs? This will set sale prices for all wigs.`)) return;
+    setBulkUpdating(true);
+    try {
+      const wigs = products.filter(p => p.category === "wigs");
+      for (const product of wigs) {
+        const newSalePrice = Math.max(0, (product.price || 0) - amount);
+        await updateProduct(product.id, { salePrice: newSalePrice });
+      }
+      await loadData();
+      alert(`Discount applied to ${wigs.length} wigs.`);
+    } catch (err) {
+      alert("Failed to apply discount.");
+      console.error(err);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
+  async function applyDiscountToSwimsuits() {
+    const amountStr = window.prompt("Enter discount amount to subtract from original price (e.g., 500):");
+    if (!amountStr) return;
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter a valid positive number.");
+      return;
+    }
+    if (!confirm(`Apply $${amount} discount to all swimsuits? This will set sale prices for all swimsuits.`)) return;
+    setBulkUpdating(true);
+    try {
+      const swimsuits = products.filter(p => p.category === "swimsuits");
+      for (const product of swimsuits) {
+        const newSalePrice = Math.max(0, (product.price || 0) - amount);
+        await updateProduct(product.id, { salePrice: newSalePrice });
+      }
+      await loadData();
+      alert(`Discount applied to ${swimsuits.length} swimsuits.`);
+    } catch (err) {
+      alert("Failed to apply discount.");
+      console.error(err);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
+  async function applyDiscountToAll() {
+    const amountStr = window.prompt("Enter discount amount to subtract from original price (e.g., 500):");
+    if (!amountStr) return;
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter a valid positive number.");
+      return;
+    }
+    if (!confirm(`Apply $${amount} discount to all products?`)) return;
+    setBulkUpdating(true);
+    try {
+      for (const product of products) {
+        const newSalePrice = Math.max(0, (product.price || 0) - amount);
+        await updateProduct(product.id, { salePrice: newSalePrice });
+      }
+      await loadData();
+      alert(`Discount applied to ${products.length} products.`);
+    } catch (err) {
+      alert("Failed to apply discount.");
+      console.error(err);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
+  async function removeAllSalePrices() {
+    if (!confirm("Remove sale prices from all products?")) return;
+    setBulkUpdating(true);
+    try {
+      for (const product of products) {
+        // Use null to explicitly remove the salePrice field
+        await updateProduct(product.id, { salePrice: null });
+      }
+      await loadData();
+      alert("All sale prices removed.");
+    } catch (err) {
+      alert("Failed to remove sale prices.");
+      console.error(err);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+  /* ===== END BULK DISCOUNT ===== */
 
   if (authLoading || (!isAdmin && !authLoading)) {
     return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
@@ -841,6 +921,7 @@ const wigStats = {
             {/* INVENTORY TAB */}
             {activeTab === "inventory" && (
               <div className="space-y-4">
+                {/* Category filters and bulk actions */}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex flex-wrap gap-2">
                     {(["all", "wigs", "swimsuits"] as const).map((cat) => (
@@ -852,10 +933,44 @@ const wigStats = {
                       </button>
                     ))}
                   </div>
-                  <button onClick={() => setShowAddProduct(true)}
-                    className="flex items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background hover:bg-foreground/90">
-                    <Plus className="h-4 w-4" /> Add New Product
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={applyDiscountToWigs}
+                      disabled={bulkUpdating}
+                      className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                    >
+                      {bulkUpdating ? <Loader2 className="h-3 w-3 animate-spin" /> : <DollarSign className="h-3 w-3" />}
+                      Discount All Wigs
+                    </button>
+                    <button
+                      onClick={applyDiscountToSwimsuits}
+                      disabled={bulkUpdating}
+                      className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                    >
+                      {bulkUpdating ? <Loader2 className="h-3 w-3 animate-spin" /> : <DollarSign className="h-3 w-3" />}
+                      Discount All Swimsuits
+                    </button>
+                    <button
+                      onClick={applyDiscountToAll}
+                      disabled={bulkUpdating}
+                      className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                    >
+                      {bulkUpdating ? <Loader2 className="h-3 w-3 animate-spin" /> : <DollarSign className="h-3 w-3" />}
+                      Discount All Products
+                    </button>
+                    <button
+                      onClick={removeAllSalePrices}
+                      disabled={bulkUpdating}
+                      className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {bulkUpdating ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                      Remove All Sales
+                    </button>
+                    <button onClick={() => setShowAddProduct(true)}
+                      className="flex items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background hover:bg-foreground/90">
+                      <Plus className="h-4 w-4" /> Add New Product
+                    </button>
+                  </div>
                 </div>
 
                 {filteredProducts.length === 0 && (
@@ -1029,7 +1144,7 @@ const wigStats = {
                             </select>
                           </div>
                           <button
-                            onClick={() => deleteOrder(order.id!)}        // 👈 FIX: use order.id
+                            onClick={() => deleteOrder(order.id!)}
                             className="rounded-md border border-border p-2 text-red-600 hover:bg-red-50"
                             title="Delete order permanently"
                           >
@@ -1042,7 +1157,6 @@ const wigStats = {
                             Fulfillment Details (sent to customer via email)
                           </h4>
                           <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                            {/* fulfillment inputs... (same as before) */}
                             {(order.deliveryMethod === "knutsford" || order.deliveryMethod === "zipmail") && (
                               <>
                                 <div>
