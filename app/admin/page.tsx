@@ -8,13 +8,14 @@ import { db } from "@/lib/firebase"
 import { collection, getDocs, query, orderBy, doc, updateDoc, addDoc, deleteDoc, Timestamp } from "firebase/firestore"
 import { getAllProducts, updateProduct, addProduct } from "@/lib/firebase-products"
 import type { Product, ProductStatus } from "@/lib/products"
-import { Loader2, Package, ShoppingCart, Users, ChevronDown, Eye, X, Plus, Upload, RefreshCw, Send, ImageIcon, Trash2, MessageCircle, Star, Archive, ArchiveRestore, DollarSign, BarChart3 } from "lucide-react"
+import { Loader2, Package, ShoppingCart, Users, ChevronDown, Eye, X, Plus, Upload, RefreshCw, Send, ImageIcon, Trash2, MessageCircle, Star, Archive, ArchiveRestore, DollarSign, BarChart3, Instagram } from "lucide-react"
 
 /* ─── Types ─── */
 interface OrderItem { name: string; quantity: number; price: number }
 interface Order {
+  id?: string                     // 👈 FIX: store Firestore document ID
   receiptNumber: string
-  userId?: string // added for manual sale rule compliance
+  userId?: string
   customerName?: string
   customerPhone?: string
   customerEmail?: string
@@ -30,7 +31,7 @@ interface Order {
   status: string
   createdAt: string
   fulfillment?: FulfillmentDetails
-  adminNote?: string // optional note for manual orders
+  adminNote?: string
 }
 interface FulfillmentDetails {
   trackingNumber?: string
@@ -69,6 +70,27 @@ interface AdminReply {
   text: string
   createdAt: string
 }
+// Wig Collaboration Tracker
+interface WigCollab {
+  id?: string
+  vendorUsername: string
+  vendorLink: string
+  itemLink: string
+  policy: string
+  firstRefundAmount: number
+  firstRefundReceived: boolean          // 👈 NEW
+  secondRefundAmount: number
+  secondRefundReceived: boolean
+  hairDetails: {
+    type: 'wig' | 'bundle' | 'both'
+    length?: string
+    density?: string
+    notes?: string
+  }
+  status: 'active' | 'completed'
+  createdAt?: Timestamp
+  updatedAt?: Timestamp
+}
 
 const statusColors: Record<string, string> = {
   available: "bg-green-100 text-green-800",
@@ -93,7 +115,8 @@ export default function AdminPage() {
   const { user, isAdmin, loading: authLoading } = useAuth()
   const router = useRouter()
 
-  const [activeTab, setActiveTab] = useState<"inventory" | "orders" | "users" | "reviews">("inventory")
+  // Existing state
+  const [activeTab, setActiveTab] = useState<"inventory" | "orders" | "users" | "reviews" | "wigtracker">("inventory")
   const [loading, setLoading] = useState(true)
   const [products, setProducts] = useState<Product[]>([])
   const [orders, setOrders] = useState<Order[]>([])
@@ -112,7 +135,7 @@ export default function AdminPage() {
   const [saving, setSaving] = useState(false)
 
   // Orders
-  const [expandedOrder, setExpandedOrder] = useState<string | null>(null)
+  const [expandedOrder, setExpandedOrder] = useState<string | null>(null) // now stores order.id
   const [fulfillmentInputs, setFulfillmentInputs] = useState<Record<string, FulfillmentDetails>>({})
   const [sendingEmail, setSendingEmail] = useState<string | null>(null)
   const [uploadingFulfillmentReceipt, setUploadingFulfillmentReceipt] = useState<string | null>(null)
@@ -120,9 +143,7 @@ export default function AdminPage() {
   // Seeding
   const [seeding, setSeeding] = useState(false)
   const [seedMessage, setSeedMessage] = useState<string | null>(null)
-  useEffect(() => {
-    setSeedMessage(null);   // clear any old seed message when tab changes
-  }, [activeTab]);
+  useEffect(() => { setSeedMessage(null) }, [activeTab])
   const [firestoreStatus, setFirestoreStatus] = useState<"checking" | "ok" | "blocked" | null>(null)
 
   // Add product form
@@ -136,10 +157,27 @@ export default function AdminPage() {
     images: [] as string[],
     status: "available" as ProductStatus,
     specifications: {} as Record<string, string | string[]>,
-    quantity: undefined as number | undefined,          // for wigs
-    sizeQuantities: {} as Record<string, number>,       // for swimsuits
+    quantity: undefined as number | undefined,
+    sizeQuantities: {} as Record<string, number>,
   })
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
+
+  // Wig Collaboration state
+  const [wigCollabs, setWigCollabs] = useState<WigCollab[]>([])
+  const [showAddWigCollab, setShowAddWigCollab] = useState(false)
+  const [editingWigCollab, setEditingWigCollab] = useState<WigCollab | null>(null)
+  const [wigCollabForm, setWigCollabForm] = useState<Partial<WigCollab>>({
+    vendorUsername: '',
+    vendorLink: '',
+    itemLink: '',
+    policy: '',
+    firstRefundAmount: 0,
+    firstRefundReceived: false,           // 👈 NEW
+    secondRefundAmount: 0,
+    secondRefundReceived: false,
+    hairDetails: { type: 'wig', length: '', density: '', notes: '' },
+    status: 'active',
+  })
 
   useEffect(() => {
     if (!authLoading && !isAdmin) router.push("/")
@@ -147,7 +185,6 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (isAdmin) { checkFirestoreAccess(); loadData() }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin])
 
   async function checkFirestoreAccess() {
@@ -176,7 +213,10 @@ export default function AdminPage() {
       let ordersList: Order[] = []
       try {
         const orderSnap = await getDocs(query(collection(db, "orders"), orderBy("createdAt", "asc")))
-        ordersList = orderSnap.docs.map((d) => ({ ...d.data() } as Order))
+        ordersList = orderSnap.docs.map((d) => ({    // 👈 FIX: include document id
+          id: d.id,
+          ...d.data()
+        } as Order))
       } catch { /* rules may block */ }
 
       let usersList: FirebaseUser[] = []
@@ -217,10 +257,20 @@ export default function AdminPage() {
         })
       } catch { /* rules may block */ }
 
+      // Load wig collabs
+      let wigList: WigCollab[] = []
+      try {
+        const wigSnap = await getDocs(query(collection(db, "wigCollabs"), orderBy("createdAt", "desc")))
+        wigList = wigSnap.docs.map((d) => ({ ...d.data(), id: d.id } as WigCollab))
+      } catch (err) {
+        console.warn("Could not load wig collabs:", err)
+      }
+
       setProducts(prods)
       setOrders(ordersList)
       setUsers(usersList)
       setReviews(reviewsList)
+      setWigCollabs(wigList)
     } catch {
       const prods = await getAllProducts()
       setProducts(prods)
@@ -312,7 +362,6 @@ export default function AdminPage() {
           productData.quantity = newProduct.quantity;
         }
       } else {
-        // swimsuit
         if (Object.keys(newProduct.sizeQuantities || {}).length > 0) {
           productData.sizeQuantities = newProduct.sizeQuantities;
         }
@@ -320,7 +369,6 @@ export default function AdminPage() {
 
       await addProduct(productData);
       setShowAddProduct(false);
-      // reset form
       setNewProduct({
         name: "", category: "wigs", price: 0, salePrice: undefined,
         description: "", image: "", images: [], status: "available",
@@ -345,16 +393,16 @@ export default function AdminPage() {
     }
   };
 
-  /* ─── Delete order ─── */
-  const deleteOrder = async (receiptNumber: string) => {
+  /* ─── Delete order – now uses document ID ─── */
+  const deleteOrder = async (orderId: string) => {          // 👈 FIX: parameter is document ID
     if (!confirm('Are you sure you want to permanently delete this order?')) return;
     try {
-      await deleteDoc(doc(db, 'orders', receiptNumber));
-      setOrders(prev => prev.filter(o => o.receiptNumber !== receiptNumber));
-      if (expandedOrder === receiptNumber) setExpandedOrder(null);
+      await deleteDoc(doc(db, 'orders', orderId));
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+      if (expandedOrder === orderId) setExpandedOrder(null);
     } catch (err) {
-      alert('Failed to delete order. Check Firestore rules.');
-      console.error(err);
+      console.error('Delete error:', err);                  // 👈 FIX: log actual error
+      alert(`Delete failed: ${err.message || 'Check console for details'}`);
     }
   };
 
@@ -407,14 +455,14 @@ export default function AdminPage() {
 
     const newOrder = {
       receiptNumber,
-      userId: user?.uid, // Include admin's UID to satisfy Firestore rule
+      userId: user?.uid,
       items: [item],
       subtotal: price,
       deliveryFee: 0,
       total: price,
-      deliveryMethod: 'inperson', // default
-      paymentMethod: 'cash', // default
-      status: 'delivered', // mark as delivered so it counts in revenue
+      deliveryMethod: 'inperson',
+      paymentMethod: 'cash',
+      status: 'delivered',
       createdAt: new Date().toISOString(),
       customerName: 'Admin Manual Sale',
       customerEmail: '',
@@ -423,7 +471,7 @@ export default function AdminPage() {
 
     try {
       await addDoc(collection(db, 'orders'), newOrder);
-      await loadData(); // refresh all data
+      await loadData();
       alert('Sale recorded and order created.');
     } catch (err) {
       alert('Failed to record sale. Check Firestore rules.');
@@ -431,13 +479,14 @@ export default function AdminPage() {
     }
   }
 
-  /* ─── Update order status ─── */
-  async function updateOrderStatus(receiptNumber: string, newStatus: string) {
+  /* ─── Update order status – uses document ID ─── */
+  async function updateOrderStatus(orderId: string, newStatus: string) {   // 👈 FIX: parameter is document ID
     try {
-      await updateDoc(doc(db, "orders", receiptNumber), { status: newStatus })
-      setOrders((prev) => prev.map((o) => o.receiptNumber === receiptNumber ? { ...o, status: newStatus } : o))
-    } catch {
-      alert("Failed to update order status. Check Firestore rules.")
+      await updateDoc(doc(db, "orders", orderId), { status: newStatus })
+      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, status: newStatus } : o))
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update order status.");
     }
   }
 
@@ -453,12 +502,13 @@ export default function AdminPage() {
     finally { setUploadingFulfillmentReceipt(null); e.target.value = "" }
   }
 
-  /* ─── Save fulfillment + send email ─── */
+  /* ─── Save fulfillment + send email – uses document ID ─── */
   async function saveFulfillmentAndSendEmail(order: Order) {
+    if (!order.id) return;   // safety
     const fulfillment = fulfillmentInputs[order.receiptNumber] || {}
     setSendingEmail(order.receiptNumber)
     try {
-      await updateDoc(doc(db, "orders", order.receiptNumber), { fulfillment })
+      await updateDoc(doc(db, "orders", order.id), { fulfillment })   // 👈 FIX: use order.id
 
       const res = await fetch("/api/admin/order-status", {
         method: "POST",
@@ -536,13 +586,106 @@ export default function AdminPage() {
     } catch { alert("Failed to delete reply.") }
   }
 
+  // Wig Collaboration functions
+  async function saveWigCollab() {
+    if (!wigCollabForm.vendorUsername || !wigCollabForm.vendorLink || !wigCollabForm.itemLink) {
+      alert("Vendor username, vendor link, and item link are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const data = {
+        ...wigCollabForm,
+        firstRefundAmount: wigCollabForm.firstRefundAmount || 0,
+        firstRefundReceived: wigCollabForm.firstRefundReceived || false,   // 👈 NEW
+        secondRefundAmount: wigCollabForm.secondRefundAmount || 0,
+        secondRefundReceived: wigCollabForm.secondRefundReceived || false,
+        hairDetails: wigCollabForm.hairDetails || { type: 'wig' },
+        status: wigCollabForm.status || 'active',
+        updatedAt: Timestamp.now(),
+      };
+
+      if (editingWigCollab?.id) {
+        await updateDoc(doc(db, "wigCollabs", editingWigCollab.id), data);
+      } else {
+        await addDoc(collection(db, "wigCollabs"), {
+          ...data,
+          createdAt: Timestamp.now(),
+        });
+      }
+      setShowAddWigCollab(false);
+      setEditingWigCollab(null);
+      setWigCollabForm({
+        vendorUsername: '', vendorLink: '', itemLink: '', policy: '',
+        firstRefundAmount: 0, firstRefundReceived: false,
+        secondRefundAmount: 0, secondRefundReceived: false,
+        hairDetails: { type: 'wig', length: '', density: '', notes: '' },
+        status: 'active',
+      });
+      await loadData();
+    } catch (err) {
+      alert("Failed to save collaboration.");
+      console.error(err);
+    } finally { setSaving(false); }
+  }
+
+  async function deleteWigCollab(id: string) {
+    if (!confirm("Delete this collaboration?")) return;
+    try {
+      await deleteDoc(doc(db, "wigCollabs", id));
+      setWigCollabs(prev => prev.filter(c => c.id !== id));
+    } catch (err) {
+      alert("Failed to delete.");
+      console.error(err);
+    }
+  }
+
+  function editWigCollab(collab: WigCollab) {
+    setEditingWigCollab(collab);
+    setWigCollabForm(collab);
+    setShowAddWigCollab(true);
+  }
+
+  // Computed stats for wig tracker
+  // const wigStats = {
+  //   total: wigCollabs.length,
+  //   active: wigCollabs.filter(c => c.status === 'active').length,
+  //   outstanding: wigCollabs.reduce((sum, c) => {
+  //     if (c.status === 'active' && !c.secondRefundReceived) {
+  //       return sum + (c.secondRefundAmount || 0);
+  //     }
+  //     return sum;
+  //   }, 0),
+  //   received: wigCollabs.reduce((sum, c) => {
+  //     let total = (c.firstRefundAmount || 0);
+  //     if (c.firstRefundReceived) total += (c.firstRefundAmount || 0);      // we already count first amount once, but careful: this might double count? Adjust if needed.
+  //     if (c.secondRefundReceived) total += (c.secondRefundAmount || 0);
+  //     return sum + total;
+  //   }, 0),
+  // };
+  // Computed stats for wig tracker
+const wigStats = {
+  total: wigCollabs.length,
+  active: wigCollabs.filter(c => c.status === 'active').length,
+  outstanding: wigCollabs.reduce((sum, c) => {
+    if (c.status === 'active' && !c.secondRefundReceived) {
+      return sum + (c.secondRefundAmount || 0);
+    }
+    return sum;
+  }, 0),
+  received: wigCollabs.reduce((sum, c) => {
+    let total = 0;
+    if (c.firstRefundReceived) total += (c.firstRefundAmount || 0);
+    if (c.secondRefundReceived) total += (c.secondRefundAmount || 0);
+    return sum + total;
+  }, 0),
+};
+
   const filteredProducts = categoryFilter === "all" ? products : products.filter((p) => p.category === categoryFilter)
   const filteredReviews = reviews.filter((r) => reviewFilter === "active" ? !r.archived : r.archived)
 
-  // Summary statistics
+  // Summary statistics for main dashboard
   const totalOrders = orders.length
-  // Revenue excludes delivery fees – use subtotal instead of total
-  // Only count orders with status in ['confirmed', 'shipped', 'delivered']
   const revenueOrders = orders.filter(o => ['confirmed', 'shipped', 'delivered'].includes(o.status));
   const totalRevenue = revenueOrders.reduce((sum, order) => sum + (order.subtotal || 0), 0)
   const inventoryValue = products.reduce((sum, product) => {
@@ -551,10 +694,8 @@ export default function AdminPage() {
       if (product.quantity != null && product.quantity > 0) {
         return sum + price * product.quantity
       }
-      // If quantity is undefined/null or zero, no stock value
       return sum
     } else {
-      // swimsuits
       if (product.sizeQuantities) {
         const totalQty = Object.values(product.sizeQuantities).reduce((a, b) => a + (b || 0), 0)
         return sum + price * totalQty
@@ -611,63 +752,65 @@ export default function AdminPage() {
         )}
 
         {/* Summary Cards */}
-        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="rounded-lg border border-border bg-background p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-primary/10 p-2">
-                <ShoppingCart className="h-5 w-5 text-primary" />
+        {activeTab !== 'wigtracker' && (
+          <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-primary/10 p-2">
+                  <ShoppingCart className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Total Orders</p>
+                  <p className="text-2xl font-bold text-foreground">{totalOrders}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Total Orders</p>
-                <p className="text-2xl font-bold text-foreground">{totalOrders}</p>
+            </div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-green-100 p-2">
+                  <DollarSign className="h-5 w-5 text-green-600" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Total Revenue</p>
+                  <p className="text-2xl font-bold text-foreground">${totalRevenue.toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-blue-100 p-2">
+                  <Package className="h-5 w-5 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Inventory Value</p>
+                  <p className="text-2xl font-bold text-foreground">${inventoryValue.toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-purple-100 p-2">
+                  <BarChart3 className="h-5 w-5 text-purple-600" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Total Products</p>
+                  <p className="text-2xl font-bold text-foreground">{totalProducts}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-amber-100 p-2">
+                  <Users className="h-5 w-5 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Total Users</p>
+                  <p className="text-2xl font-bold text-foreground">{totalUsers}</p>
+                </div>
               </div>
             </div>
           </div>
-          <div className="rounded-lg border border-border bg-background p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-green-100 p-2">
-                <DollarSign className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Total Revenue</p>
-                <p className="text-2xl font-bold text-foreground">${totalRevenue.toFixed(2)}</p>
-              </div>
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-blue-100 p-2">
-                <Package className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Inventory Value</p>
-                <p className="text-2xl font-bold text-foreground">${inventoryValue.toFixed(2)}</p>
-              </div>
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-purple-100 p-2">
-                <BarChart3 className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Total Products</p>
-                <p className="text-2xl font-bold text-foreground">{totalProducts}</p>
-              </div>
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-amber-100 p-2">
-                <Users className="h-5 w-5 text-amber-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Total Users</p>
-                <p className="text-2xl font-bold text-foreground">{totalUsers}</p>
-              </div>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Tabs */}
         <div className="mb-6 flex flex-wrap gap-1 rounded-lg border border-border bg-background p-1">
@@ -676,6 +819,7 @@ export default function AdminPage() {
             { id: "orders" as const, label: "Orders", icon: ShoppingCart, count: orders.length },
             { id: "reviews" as const, label: "Reviews", icon: MessageCircle, count: reviews.filter((r) => !r.archived).length },
             { id: "users" as const, label: "Users", icon: Users, count: users.length },
+            { id: "wigtracker" as const, label: "Wig Tracker", icon: Instagram, count: wigCollabs.length },
           ]).map((tab) => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
               className={`flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-colors min-w-[80px] ${
@@ -694,7 +838,7 @@ export default function AdminPage() {
           <div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
         ) : (
           <>
-            {/* ════════ INVENTORY ════════ */}
+            {/* INVENTORY TAB */}
             {activeTab === "inventory" && (
               <div className="space-y-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -775,11 +919,9 @@ export default function AdminPage() {
                         value={product.status || "available"}
                         onChange={async (e) => {
                           const newStatus = e.target.value as ProductStatus;
-                          // If changing to sold_out, offer to record a manual sale
                           if (newStatus === "sold_out") {
                             await recordManualSale(product);
                           }
-                          // Always update product status
                           await updateProduct(product.id, { status: newStatus });
                           await loadData();
                         }}
@@ -804,7 +946,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {/* ════════ ORDERS ════════ */}
+            {/* ORDERS TAB */}
             {activeTab === "orders" && (
               <div className="space-y-3">
                 {orders.length === 0 && (
@@ -814,8 +956,8 @@ export default function AdminPage() {
                   </div>
                 )}
                 {orders.map((order, idx) => (
-                  <div key={order.receiptNumber} className="rounded-lg border border-border bg-background">
-                    <button onClick={() => setExpandedOrder(expandedOrder === order.receiptNumber ? null : order.receiptNumber)}
+                  <div key={order.id} className="rounded-lg border border-border bg-background">
+                    <button onClick={() => setExpandedOrder(expandedOrder === order.id ? null : order.id!)}
                       className="flex w-full items-center gap-4 p-4 text-left">
                       <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground">{idx + 1}</span>
                       <div className="min-w-0 flex-1">
@@ -828,10 +970,10 @@ export default function AdminPage() {
                           {order.adminNote && <span className="ml-2 italic text-blue-600">({order.adminNote})</span>}
                         </p>
                       </div>
-                      <ChevronDown className={`h-5 w-5 flex-shrink-0 text-muted-foreground transition-transform ${expandedOrder === order.receiptNumber ? "rotate-180" : ""}`} />
+                      <ChevronDown className={`h-5 w-5 flex-shrink-0 text-muted-foreground transition-transform ${expandedOrder === order.id ? "rotate-180" : ""}`} />
                     </button>
 
-                    {expandedOrder === order.receiptNumber && (
+                    {expandedOrder === order.id && (
                       <div className="border-t border-border px-4 pb-4">
                         <div className="mt-4 grid gap-4 grid-cols-1 sm:grid-cols-2">
                           <div>
@@ -877,7 +1019,7 @@ export default function AdminPage() {
                         <div className="mt-4 flex items-center gap-4">
                           <div>
                             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Update Status</h4>
-                            <select value={order.status} onChange={(e) => updateOrderStatus(order.receiptNumber, e.target.value)}
+                            <select value={order.status} onChange={(e) => updateOrderStatus(order.id!, e.target.value)}
                               className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
                               <option value="pending">Pending</option>
                               <option value="confirmed">Confirmed</option>
@@ -887,7 +1029,7 @@ export default function AdminPage() {
                             </select>
                           </div>
                           <button
-                            onClick={() => deleteOrder(order.receiptNumber)}
+                            onClick={() => deleteOrder(order.id!)}        // 👈 FIX: use order.id
                             className="rounded-md border border-border p-2 text-red-600 hover:bg-red-50"
                             title="Delete order permanently"
                           >
@@ -900,6 +1042,7 @@ export default function AdminPage() {
                             Fulfillment Details (sent to customer via email)
                           </h4>
                           <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                            {/* fulfillment inputs... (same as before) */}
                             {(order.deliveryMethod === "knutsford" || order.deliveryMethod === "zipmail") && (
                               <>
                                 <div>
@@ -1010,7 +1153,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {/* ════════ REVIEWS ════════ */}
+            {/* REVIEWS TAB */}
             {activeTab === "reviews" && (
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-2">
@@ -1114,7 +1257,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {/* ════════ USERS ════════ */}
+            {/* USERS TAB */}
             {activeTab === "users" && (
               <div className="space-y-3">
                 {users.length === 0 && (
@@ -1147,14 +1290,455 @@ export default function AdminPage() {
                 })}
               </div>
             )}
+
+            {/* WIG TRACKER TAB */}
+            {activeTab === "wigtracker" && (
+              <div className="space-y-6">
+                {/* Stats Cards */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-background p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-full bg-primary/10 p-2">
+                        <Instagram className="h-5 w-5 text-primary" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Total Collabs</p>
+                        <p className="text-2xl font-bold text-foreground">{wigStats.total}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-full bg-green-100 p-2">
+                        <Users className="h-5 w-5 text-green-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Active Vendors</p>
+                        <p className="text-2xl font-bold text-foreground">{wigStats.active}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-full bg-amber-100 p-2">
+                        <DollarSign className="h-5 w-5 text-amber-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Outstanding Refunds</p>
+                        <p className="text-2xl font-bold text-foreground">${wigStats.outstanding.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-full bg-blue-100 p-2">
+                        <BarChart3 className="h-5 w-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Total Received</p>
+                        <p className="text-2xl font-bold text-foreground">${wigStats.received.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Add Button */}
+                <div className="flex justify-end">
+                  <button onClick={() => { setEditingWigCollab(null); setWigCollabForm({ vendorUsername: '', vendorLink: '', itemLink: '', policy: '', firstRefundAmount: 0, firstRefundReceived: false, secondRefundAmount: 0, secondRefundReceived: false, hairDetails: { type: 'wig', length: '', density: '', notes: '' }, status: 'active' }); setShowAddWigCollab(true); }}
+                    className="flex items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background hover:bg-foreground/90">
+                    <Plus className="h-4 w-4" /> Add Collaboration
+                  </button>
+                </div>
+
+                {/* List */}
+                {wigCollabs.length === 0 ? (
+                  <div className="rounded-lg border border-border bg-background p-12 text-center">
+                    <Instagram className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                    <h3 className="mt-4 text-lg font-semibold text-foreground">No collaborations yet</h3>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {wigCollabs.map((collab) => {
+                      const outstanding = collab.status === 'active' && !collab.secondRefundReceived ? collab.secondRefundAmount || 0 : 0;
+                      return (
+                        <div key={collab.id} className="rounded-lg border border-border bg-background p-4">
+                          <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
+                            <div className="flex-1 w-full">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium text-foreground">{collab.vendorUsername}</span>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${collab.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                                  {collab.status}
+                                </span>
+                                {outstanding > 0 && (
+                                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                                    ${outstanding} outstanding
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                                <p className="text-muted-foreground break-words">
+                                  <span className="font-medium text-foreground">Vendor:</span>{' '}
+                                  <a href={collab.vendorLink} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{collab.vendorLink}</a>
+                                </p>
+                                <p className="text-muted-foreground break-words">
+                                  <span className="font-medium text-foreground">Item:</span>{' '}
+                                  <a href={collab.itemLink} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Link</a>
+                                </p>
+                                <p className="text-muted-foreground break-words col-span-2">
+                                  <span className="font-medium text-foreground">Policy:</span> {collab.policy || '—'}
+                                </p>
+                                <p className="text-muted-foreground">
+                                  <span className="font-medium text-foreground">Hair:</span> {collab.hairDetails.type}
+                                  {collab.hairDetails.length && `, ${collab.hairDetails.length}`}
+                                  {collab.hairDetails.density && `, ${collab.hairDetails.density}`}
+                                  {collab.hairDetails.notes && ` — ${collab.hairDetails.notes}`}
+                                </p>
+                                <p className="text-muted-foreground">
+                                  <span className="font-medium text-foreground">Refunds:</span> First ${collab.firstRefundAmount?.toFixed(2) ?? '0'} {collab.firstRefundReceived ? '(received)' : '(pending)'}, Second ${collab.secondRefundAmount?.toFixed(2) ?? '0'} {collab.secondRefundReceived ? '(received)' : '(pending)'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 self-end sm:self-start">
+                              <button onClick={() => editWigCollab(collab)}
+                                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted">Edit</button>
+                              <button onClick={() => deleteWigCollab(collab.id!)}
+                                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
 
-      {/* ════════ ADD PRODUCT MODAL ════════ */}
-      {showAddProduct && (
+      {/* MODALS - Add/Edit Wig Collaboration */}
+      {showAddWigCollab && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-background p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-serif text-xl font-bold text-foreground">{editingWigCollab ? 'Edit' : 'Add'} Collaboration</h2>
+              <button onClick={() => setShowAddWigCollab(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-4">
+              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Vendor Username *</label>
+                  <input type="text" value={wigCollabForm.vendorUsername || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, vendorUsername: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="@vendor" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Vendor Profile Link *</label>
+                  <input type="url" value={wigCollabForm.vendorLink || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, vendorLink: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="https://instagram.com/..." />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Item Link *</label>
+                  <input type="url" value={wigCollabForm.itemLink || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, itemLink: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="https://..." />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Policy (free text)</label>
+                  <textarea value={wigCollabForm.policy || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, policy: e.target.value })}
+                    rows={2} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="e.g. 50% after shipping, 50% after review" />
+                </div>
+              </div>
+
+              {/* Hair Details */}
+              <div>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Hair Details</h4>
+                <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Type</label>
+                    <select value={wigCollabForm.hairDetails?.type || 'wig'} onChange={(e) => setWigCollabForm({ ...wigCollabForm, hairDetails: { ...wigCollabForm.hairDetails, type: e.target.value as 'wig'|'bundle'|'both' } })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+                      <option value="wig">Wig</option>
+                      <option value="bundle">Bundle</option>
+                      <option value="both">Both</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Length</label>
+                    <input type="text" value={wigCollabForm.hairDetails?.length || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, hairDetails: { ...wigCollabForm.hairDetails, length: e.target.value } })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="e.g. 20 inch" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Density</label>
+                    <input type="text" value={wigCollabForm.hairDetails?.density || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, hairDetails: { ...wigCollabForm.hairDetails, density: e.target.value } })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="e.g. 180%" />
+                  </div>
+                  <div className="sm:col-span-1">
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Notes</label>
+                    <input type="text" value={wigCollabForm.hairDetails?.notes || ''} onChange={(e) => setWigCollabForm({ ...wigCollabForm, hairDetails: { ...wigCollabForm.hairDetails, notes: e.target.value } })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="optional" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Refund Amounts with First Payment Checkbox */}
+              <div>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Refund Tracking</h4>
+                <div className="grid gap-4 grid-cols-2 sm:grid-cols-5 items-center">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">First Refund ($)</label>
+                    <input type="number" min="0" step="0.01" value={wigCollabForm.firstRefundAmount || 0}
+                      onChange={(e) => setWigCollabForm({ ...wigCollabForm, firstRefundAmount: parseFloat(e.target.value) || 0 })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </div>
+                  <div className="flex items-center gap-2 pt-6">
+                    <input type="checkbox" id="firstReceived" checked={wigCollabForm.firstRefundReceived || false}
+                      onChange={(e) => setWigCollabForm({ ...wigCollabForm, firstRefundReceived: e.target.checked })} />
+                    <label htmlFor="firstReceived" className="text-xs font-medium text-muted-foreground">First received?</label>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Second Refund ($)</label>
+                    <input type="number" min="0" step="0.01" value={wigCollabForm.secondRefundAmount || 0}
+                      onChange={(e) => setWigCollabForm({ ...wigCollabForm, secondRefundAmount: parseFloat(e.target.value) || 0 })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </div>
+                  <div className="flex items-center gap-2 pt-6">
+                    <input type="checkbox" id="secondReceived" checked={wigCollabForm.secondRefundReceived || false}
+                      onChange={(e) => setWigCollabForm({ ...wigCollabForm, secondRefundReceived: e.target.checked })} />
+                    <label htmlFor="secondReceived" className="text-xs font-medium text-muted-foreground">Second received?</label>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Status</label>
+                    <select value={wigCollabForm.status || 'active'} onChange={(e) => setWigCollabForm({ ...wigCollabForm, status: e.target.value as 'active'|'completed' })}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+                      <option value="active">Active</option>
+                      <option value="completed">Completed</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                <button onClick={() => setShowAddWigCollab(false)} className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted">Cancel</button>
+                <button onClick={saveWigCollab} disabled={saving}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:bg-foreground/90 disabled:opacity-50">
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {saving ? "Saving..." : (editingWigCollab ? "Update" : "Add")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RECEIPT IMAGE MODAL */}
+      {receiptModalImage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setReceiptModalImage(null)}>
+          <div className="relative max-h-[90vh] max-w-3xl overflow-auto rounded-lg bg-background p-2" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setReceiptModalImage(null)}
+              className="absolute right-3 top-3 z-10 rounded-full bg-foreground/80 p-1.5 text-background hover:bg-foreground">
+              <X className="h-4 w-4" />
+            </button>
+            <img src={receiptModalImage} alt="Customer receipt" className="max-h-[85vh] w-auto rounded-md" />
+          </div>
+        </div>
+      )}
+
+      {/* EDIT PRODUCT MODAL */}
+      {editingProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-background p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-serif text-xl font-bold text-foreground">Edit: {editingProduct.name}</h2>
+              <button onClick={() => setEditingProduct(null)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-4">
+              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Product Name</label>
+                  <input type="text" value={editingProduct.name}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
+                  <select value={editingProduct.category}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value as "wigs" | "swimsuits" })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+                    <option value="wigs">Wigs</option>
+                    <option value="swimsuits">Swimsuits</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Description</label>
+                <textarea value={editingProduct.description}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, description: e.target.value })}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" rows={3} />
+              </div>
+              <div className="grid gap-4 grid-cols-2 sm:grid-cols-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Price (JMD)</label>
+                  <input type="number" value={editingProduct.price || ""}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) || 0 })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Sale Price</label>
+                  <input type="number" value={editingProduct.salePrice || ""}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, salePrice: parseFloat(e.target.value) || undefined })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Status</label>
+                  <select value={editingProduct.status || "available"}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, status: e.target.value as ProductStatus })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+                    <option value="available">Available</option>
+                    <option value="sold_out">Sold Out</option>
+                    <option value="coming_soon">Coming Soon</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Specifications */}
+              <div>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Specifications</h4>
+                {editingProduct.category === "wigs" ? (
+                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                    {(["hairLength", "laceSize", "density", "hairType"] as const).map((spec) => (
+                      <div key={spec}>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground capitalize">{spec.replace(/([A-Z])/g, " $1")}</label>
+                        <input type="text" value={(editingProduct.specifications?.[spec] as string) || ""}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, [spec]: e.target.value } })}
+                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                    {(["material", "coverage", "style"] as const).map((spec) => (
+                      <div key={spec}>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground capitalize">{spec}</label>
+                        <input type="text" value={(editingProduct.specifications?.[spec] as string) || ""}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, [spec]: e.target.value } })}
+                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </div>
+                    ))}
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Sizes (comma-separated)</label>
+                      <input type="text" value={Array.isArray(editingProduct.specifications?.sizes) ? (editingProduct.specifications.sizes as string[]).join(", ") : ""}
+                        onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, sizes: e.target.value.split(",").map((s) => s.trim()) } })}
+                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="S, M, L" />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Stock */}
+              {editingProduct.category === "wigs" ? (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Stock Quantity</label>
+                  <input type="number" min="0" value={editingProduct.quantity ?? ""}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, quantity: e.target.value === "" ? undefined : parseInt(e.target.value) || 0 })}
+                    placeholder="Unlimited"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  <p className="mt-1 text-[10px] text-muted-foreground">Leave empty for unlimited stock</p>
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Stock per Size</label>
+                  {(() => {
+                    const sizes = Array.isArray(editingProduct.specifications?.sizes)
+                      ? (editingProduct.specifications.sizes as string[])
+                      : [];
+                    if (sizes.length === 0) {
+                      return (
+                        <p className="text-xs text-amber-600">
+                          No sizes defined in specifications. Edit specifications first.
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        {sizes.map((size) => (
+                          <div key={size}>
+                            <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+                              Size {size}
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={editingProduct.sizeQuantities?.[size] ?? ''}
+                              onChange={(e) => {
+                                const qty = e.target.value === '' ? undefined : parseInt(e.target.value) || 0;
+                                setEditingProduct({
+                                  ...editingProduct,
+                                  sizeQuantities: {
+                                    ...(editingProduct.sizeQuantities || {}),
+                                    [size]: qty,
+                                  },
+                                });
+                              }}
+                              placeholder="0"
+                              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Photos */}
+              <div>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Photos</h4>
+                <div className="flex flex-wrap gap-3">
+                  {editingProduct.images.map((img, i) => (
+                    <div key={i} className="group relative h-24 w-24 overflow-hidden rounded-md border border-border">
+                      <Image src={img} alt="" fill className="object-cover" sizes="96px" />
+                      {img === editingProduct.image && <span className="absolute left-1 top-1 rounded bg-foreground/80 px-1 py-0.5 text-[9px] font-bold text-background">MAIN</span>}
+                      <div className="absolute inset-0 hidden items-end justify-between bg-gradient-to-t from-black/60 p-1 group-hover:flex">
+                        {img !== editingProduct.image && (
+                          <button onClick={() => setEditingProduct({ ...editingProduct, image: img })}
+                            className="rounded bg-white/90 px-1 py-0.5 text-[9px] font-bold text-foreground">Set Main</button>
+                        )}
+                        <button onClick={() => removePhoto(i, "edit")}
+                          className="ml-auto rounded-full bg-red-600 p-0.5 text-white"><Trash2 className="h-3 w-3" /></button>
+                      </div>
+                    </div>
+                  ))}
+                  <label className="flex h-24 w-24 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed border-border hover:border-primary hover:bg-primary/5">
+                    {uploadingPhoto ? <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /> : <><ImageIcon className="h-5 w-5 text-muted-foreground" /><span className="mt-1 text-[10px] text-muted-foreground">Add photo</span></>}
+                    <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden"
+                      onChange={(e) => handleProductPhotoUpload(e, "edit", false)} />
+                  </label>
+                </div>
+                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 text-xs text-primary hover:underline">
+                  <Upload className="h-3.5 w-3.5" /> Replace main photo
+                  <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden"
+                    onChange={(e) => handleProductPhotoUpload(e, "edit", true)} />
+                </label>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                <button onClick={() => setEditingProduct(null)} className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted">Cancel</button>
+                <button onClick={saveEditProduct} disabled={saving}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:bg-foreground/90 disabled:opacity-50">
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {saving ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADD PRODUCT MODAL */}
+      {showAddProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="maxh-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-background p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-serif text-xl font-bold text-foreground">Add New Product</h2>
               <button onClick={() => setShowAddProduct(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
@@ -1318,210 +1902,6 @@ export default function AdminPage() {
                   className="flex flex-1 items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:bg-foreground/90 disabled:opacity-50">
                   {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                   {saving ? "Adding..." : "Add Product"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ════════ RECEIPT IMAGE MODAL ════════ */}
-      {receiptModalImage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setReceiptModalImage(null)}>
-          <div className="relative max-h-[90vh] max-w-3xl overflow-auto rounded-lg bg-background p-2" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setReceiptModalImage(null)}
-              className="absolute right-3 top-3 z-10 rounded-full bg-foreground/80 p-1.5 text-background hover:bg-foreground">
-              <X className="h-4 w-4" />
-            </button>
-            <img src={receiptModalImage} alt="Customer receipt" className="max-h-[85vh] w-auto rounded-md" />
-          </div>
-        </div>
-      )}
-
-      {/* ════════ EDIT PRODUCT MODAL ════════ */}
-      {editingProduct && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-background p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-xl font-bold text-foreground">Edit: {editingProduct.name}</h2>
-              <button onClick={() => setEditingProduct(null)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="space-y-4">
-              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Product Name</label>
-                  <input type="text" value={editingProduct.name}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
-                  <select value={editingProduct.category}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value as "wigs" | "swimsuits" })}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
-                    <option value="wigs">Wigs</option>
-                    <option value="swimsuits">Swimsuits</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Description</label>
-                <textarea value={editingProduct.description}
-                  onChange={(e) => setEditingProduct({ ...editingProduct, description: e.target.value })}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" rows={3} />
-              </div>
-              <div className="grid gap-4 grid-cols-2 sm:grid-cols-4">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Price (JMD)</label>
-                  <input type="number" value={editingProduct.price || ""}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) || 0 })}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Sale Price</label>
-                  <input type="number" value={editingProduct.salePrice || ""}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, salePrice: parseFloat(e.target.value) || undefined })}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Status</label>
-                  <select value={editingProduct.status || "available"}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, status: e.target.value as ProductStatus })}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
-                    <option value="available">Available</option>
-                    <option value="sold_out">Sold Out</option>
-                    <option value="coming_soon">Coming Soon</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Specifications - same as add but read from editingProduct */}
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Specifications</h4>
-                {editingProduct.category === "wigs" ? (
-                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                    {(["hairLength", "laceSize", "density", "hairType"] as const).map((spec) => (
-                      <div key={spec}>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground capitalize">{spec.replace(/([A-Z])/g, " $1")}</label>
-                        <input type="text" value={(editingProduct.specifications?.[spec] as string) || ""}
-                          onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, [spec]: e.target.value } })}
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                    {(["material", "coverage", "style"] as const).map((spec) => (
-                      <div key={spec}>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground capitalize">{spec}</label>
-                        <input type="text" value={(editingProduct.specifications?.[spec] as string) || ""}
-                          onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, [spec]: e.target.value } })}
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                      </div>
-                    ))}
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Sizes (comma-separated)</label>
-                      <input type="text" value={Array.isArray(editingProduct.specifications?.sizes) ? (editingProduct.specifications.sizes as string[]).join(", ") : ""}
-                        onChange={(e) => setEditingProduct({ ...editingProduct, specifications: { ...editingProduct.specifications, sizes: e.target.value.split(",").map((s) => s.trim()) } })}
-                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="S, M, L" />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Stock for editing */}
-              {editingProduct.category === "wigs" ? (
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Stock Quantity</label>
-                  <input type="number" min="0" value={editingProduct.quantity ?? ""}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, quantity: e.target.value === "" ? undefined : parseInt(e.target.value) || 0 })}
-                    placeholder="Unlimited"
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
-                  <p className="mt-1 text-[10px] text-muted-foreground">Leave empty for unlimited stock</p>
-                </div>
-              ) : (
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Stock per Size</label>
-                  {(() => {
-                    const sizes = Array.isArray(editingProduct.specifications?.sizes)
-                      ? (editingProduct.specifications.sizes as string[])
-                      : [];
-                    if (sizes.length === 0) {
-                      return (
-                        <p className="text-xs text-amber-600">
-                          No sizes defined in specifications. Edit specifications first.
-                        </p>
-                      );
-                    }
-                    return (
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        {sizes.map((size) => (
-                          <div key={size}>
-                            <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
-                              Size {size}
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              value={editingProduct.sizeQuantities?.[size] ?? ''}
-                              onChange={(e) => {
-                                const qty = e.target.value === '' ? undefined : parseInt(e.target.value) || 0;
-                                setEditingProduct({
-                                  ...editingProduct,
-                                  sizeQuantities: {
-                                    ...(editingProduct.sizeQuantities || {}),
-                                    [size]: qty,
-                                  },
-                                });
-                              }}
-                              placeholder="0"
-                              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-
-              {/* Photo management (unchanged) */}
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Photos</h4>
-                <div className="flex flex-wrap gap-3">
-                  {editingProduct.images.map((img, i) => (
-                    <div key={i} className="group relative h-24 w-24 overflow-hidden rounded-md border border-border">
-                      <Image src={img} alt="" fill className="object-cover" sizes="96px" />
-                      {img === editingProduct.image && <span className="absolute left-1 top-1 rounded bg-foreground/80 px-1 py-0.5 text-[9px] font-bold text-background">MAIN</span>}
-                      <div className="absolute inset-0 hidden items-end justify-between bg-gradient-to-t from-black/60 p-1 group-hover:flex">
-                        {img !== editingProduct.image && (
-                          <button onClick={() => setEditingProduct({ ...editingProduct, image: img })}
-                            className="rounded bg-white/90 px-1 py-0.5 text-[9px] font-bold text-foreground">Set Main</button>
-                        )}
-                        <button onClick={() => removePhoto(i, "edit")}
-                          className="ml-auto rounded-full bg-red-600 p-0.5 text-white"><Trash2 className="h-3 w-3" /></button>
-                      </div>
-                    </div>
-                  ))}
-                  <label className="flex h-24 w-24 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed border-border hover:border-primary hover:bg-primary/5">
-                    {uploadingPhoto ? <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /> : <><ImageIcon className="h-5 w-5 text-muted-foreground" /><span className="mt-1 text-[10px] text-muted-foreground">Add photo</span></>}
-                    <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden"
-                      onChange={(e) => handleProductPhotoUpload(e, "edit", false)} />
-                  </label>
-                </div>
-                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 text-xs text-primary hover:underline">
-                  <Upload className="h-3.5 w-3.5" /> Replace main photo
-                  <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden"
-                    onChange={(e) => handleProductPhotoUpload(e, "edit", true)} />
-                </label>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-3 pt-2">
-                <button onClick={() => setEditingProduct(null)} className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted">Cancel</button>
-                <button onClick={saveEditProduct} disabled={saving}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-md bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:bg-foreground/90 disabled:opacity-50">
-                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {saving ? "Saving..." : "Save Changes"}
                 </button>
               </div>
             </div>

@@ -23,6 +23,15 @@ export default function HomePage() {
       {/* Hero */}
       <section className="relative min-h-[85vh] bg-secondary/20">
         <div className="mx-auto flex min-h-[85vh] max-w-7xl flex-col items-center justify-center px-6 py-20 text-center lg:px-8">
+
+          {/* 🌸 Bigger Women's Day Banner */}
+          <div className="mb-8 inline-block rounded-full border border-pink-200 bg-pink-100 px-8 py-4 text-pink-800 shadow-md">
+            <div className="text-xl font-medium md:text-2xl">🌸 Happy Women's Day! 🌸</div>
+            <div className="text-base opacity-90 md:text-lg">
+              Celebrating the strength, beauty, and resilience of women everywhere.
+            </div>
+          </div>
+
           <div className="max-w-4xl space-y-8">
             <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
               Curated Collection 2026
