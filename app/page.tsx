@@ -24,6 +24,12 @@ export default function HomePage() {
       <section className="relative min-h-[85vh] bg-secondary/20">
         <div className="mx-auto flex min-h-[85vh] max-w-7xl flex-col items-center justify-center px-6 py-20 text-center lg:px-8">
           <div className="max-w-4xl space-y-8">
+
+            {/* 🔥 SALE BANNER – add this block */}
+            <div className="inline-block bg-red-600 px-6 py-4 text-white text-base sm:text-lg md:text-xl font-bold uppercase tracking-wide shadow-lg rounded-md">
+              🔥 SALE ON ALL SWIMSUITS! Grab now until March 31st 🔥
+            </div>
+
             <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
               Curated Collection 2026
             </p>
